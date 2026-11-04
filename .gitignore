@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+ENV/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+coverage/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.example.*
+
+# Databases and user content
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+backend/*.db
+backend/csv_dashboard.db
+backend/uploads/
+backend/**/*.csv
+backend/**/*.xlsx
+uploads/
+reports/
+*.pdf
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and temp files
+*.log
+*.tmp
+tmp/
+temp/
+
+# Local site data
+.cache/
+
+# Keep sample/test fixtures needed for project validation
+!backend/test_sample.csv
+!backend/test_sample2.csv
+!backend/tests/fixtures/
