@@ -1,6 +1,6 @@
-# 📊 CSV Analytics Dashboard — AI Data Analyzer
+# 📊 AI-Data-Analyzer — CSV Analytics Dashboard
 
-A full-stack web application for analyzing CSV and Excel files with automated data quality auditing, statistical profiling, dynamic business intelligence KPIs, time-series trends, rule-based Q&A, secure backend authentication, multi-tenant dataset ownership, and SQLAlchemy database persistence.
+A full-stack AI-powered data analytics and business intelligence platform for analyzing CSV and Excel files, with automated data quality auditing, statistical profiling, dynamic business intelligence KPIs, time-series trends, rule-based Q&A, secure backend authentication, multi-tenant dataset ownership, and SQLAlchemy database persistence.
 
 ---
 
