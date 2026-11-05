@@ -201,11 +201,15 @@ def _finish_dataset_deletion(db, dataset: Dataset) -> None:
         dataset.deletion_pending = True
         db.commit()
 
-    staged_paths = stage_dataset_deletion(dataset_id)
+    staged_paths = stage_dataset_deletion(
+        dataset_id,
+        dataset.raw_storage_path,
+        dataset.cleaned_storage_path,
+    )
     remove_staged_dataset(staged_paths)
     reports = db.query(BusinessReport).filter(BusinessReport.dataset_id == dataset_id).all()
     for report in reports:
-        delete_report_storage(report.id)
+        delete_report_storage(report.id, report.storage_path)
         db.delete(report)
     db.delete(dataset)
     db.commit()

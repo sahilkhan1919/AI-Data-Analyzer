@@ -19,6 +19,7 @@ import {
   UserRound,
 } from "lucide-react";
 import AdvancedAnalytics from "./AdvancedAnalytics.jsx";
+import { resolveApiUrl } from "./apiConfig.js";
 import {
   Bar,
   Line,
@@ -194,10 +195,11 @@ const chartWrapperStyle = {
   minHeight: "360px"
 };
 
-const localApiHost = window.location.hostname || "127.0.0.1";
-const API_URL =
-  import.meta.env.VITE_API_URL ||
-  `${window.location.protocol}//${localApiHost}:5001`;
+const API_URL = resolveApiUrl({
+  apiUrl: import.meta.env.VITE_API_URL,
+  mode: import.meta.env.MODE,
+  location: window.location,
+});
 axios.defaults.withCredentials = true;
 
 // Helper: extract a human-readable message from backend error responses.

@@ -34,6 +34,12 @@ class TestFlaskInitialization:
 
 
 class TestHealthEndpoint:
+    def test_api_health_returns_public_liveness_response(self, unauth_client):
+        resp = unauth_client.get("/api/health")
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"status": "ok"}
+
     def test_root_returns_200(self, client):
         resp = client.get("/")
         assert resp.status_code == 200

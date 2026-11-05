@@ -11,7 +11,9 @@ alembic_config = context.config
 if alembic_config.config_file_name is not None:
     fileConfig(alembic_config.config_file_name)
 
-database_uri = os.environ.get("DATABASE_URI", config.DATABASE_URI)
+database_uri = config.normalize_database_uri(
+    os.environ.get("DATABASE_URI", config.DATABASE_URI)
+)
 alembic_config.set_main_option("sqlalchemy.url", database_uri.replace("%", "%%"))
 target_metadata = Base.metadata
 

@@ -7,12 +7,13 @@ CI, and production environments.
 
 Defaults are intentionally conservative for local development.
 Production requires an explicit strong SECRET_KEY, PostgreSQL DATABASE_URI,
-and ALLOWED_ORIGINS. Uploaded files require a durable shared volume.
+Cloudflare R2 storage, and ALLOWED_ORIGINS.
 """
 
 import os
 import logging
 import re
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -43,6 +44,58 @@ ALLOWED_EXTENSIONS: frozenset = frozenset({"csv", "xlsx"})
 # Storage
 # ---------------------------------------------------------------------------
 UPLOAD_FOLDER: str = os.environ.get("UPLOAD_FOLDER", "uploads")
+STORAGE_BACKEND: str = os.environ.get("STORAGE_BACKEND", "local").strip().lower()
+if STORAGE_BACKEND not in {"local", "r2"}:
+    raise RuntimeError("STORAGE_BACKEND must be either 'local' or 'r2'.")
+
+R2_ACCOUNT_ID: str = os.environ.get("R2_ACCOUNT_ID", "")
+R2_BUCKET_NAME: str = os.environ.get("R2_BUCKET_NAME", "")
+R2_ACCESS_KEY_ID: str = os.environ.get("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY: str = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+R2_ENDPOINT_URL: str = os.environ.get("R2_ENDPOINT_URL", "")
+R2_REGION: str = os.environ.get("R2_REGION", "auto")
+R2_PREFIX: str = os.environ.get("R2_PREFIX", "csv-dashboard")
+
+
+def validate_r2_configuration(
+    account_id: str | None,
+    bucket_name: str | None,
+    access_key_id: str | None,
+    secret_access_key: str | None,
+    endpoint_url: str | None = None,
+) -> None:
+    """Require private bucket credentials and a secure S3-compatible endpoint."""
+    if not bucket_name or not access_key_id or not secret_access_key:
+        raise RuntimeError(
+            "R2 storage requires R2_BUCKET_NAME, R2_ACCESS_KEY_ID, and "
+            "R2_SECRET_ACCESS_KEY."
+        )
+    if not endpoint_url and not account_id:
+        raise RuntimeError("R2 storage requires R2_ACCOUNT_ID or R2_ENDPOINT_URL.")
+    if endpoint_url:
+        parsed = urlsplit(endpoint_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise RuntimeError("R2_ENDPOINT_URL must be an HTTPS origin without a path.")
+    if any(part in {".", ".."} for part in R2_PREFIX.strip("/").split("/")):
+        raise RuntimeError("R2_PREFIX must not contain '.' or '..' path components.")
+
+
+if STORAGE_BACKEND == "r2":
+    validate_r2_configuration(
+        R2_ACCOUNT_ID,
+        R2_BUCKET_NAME,
+        R2_ACCESS_KEY_ID,
+        R2_SECRET_ACCESS_KEY,
+        R2_ENDPOINT_URL or None,
+    )
 
 # ---------------------------------------------------------------------------
 # CORS
@@ -55,6 +108,44 @@ _raw_origins: str = os.environ.get(
 )
 ALLOWED_ORIGINS: list = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
+
+def validate_production_origins(raw_origins: str | None) -> list[str]:
+    """Require explicit, concrete HTTP(S) origins for credentialed production CORS."""
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in (raw_origins or "").split(",")
+        if origin.strip()
+    ]
+    if not origins:
+        raise RuntimeError("Production requires ALLOWED_ORIGINS to be explicitly configured.")
+
+    for origin in origins:
+        parsed = urlsplit(origin)
+        try:
+            parsed.port
+        except ValueError:
+            raise RuntimeError(
+                "Production ALLOWED_ORIGINS must contain only valid HTTP(S) origins."
+            ) from None
+        if (
+            "*" in origin
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise RuntimeError(
+                "Production ALLOWED_ORIGINS must contain only explicit HTTP(S) origins "
+                "without wildcards, credentials, paths, queries, or fragments."
+            )
+
+    return origins
+
+
 # ---------------------------------------------------------------------------
 # Database & Authentication (Phase 3)
 # ---------------------------------------------------------------------------
@@ -62,6 +153,15 @@ _default_db_path = os.path.join(
     os.path.abspath(os.path.dirname(__file__)), "csv_dashboard.db"
 )
 DATABASE_URI: str = os.environ.get("DATABASE_URI", f"sqlite:///{_default_db_path}")
+
+
+def normalize_database_uri(uri: str) -> str:
+    """Use psycopg 3 for PostgreSQL URLs, including Neon-provided URI schemes."""
+    if uri.startswith("postgres://"):
+        return "postgresql+psycopg://" + uri[len("postgres://") :]
+    if uri.startswith("postgresql://"):
+        return "postgresql+psycopg://" + uri[len("postgresql://") :]
+    return uri
 
 
 def validate_secret_key(secret: str | None, environment: str) -> str:
@@ -85,12 +185,14 @@ def validate_secret_key(secret: str | None, environment: str) -> str:
 
 SECRET_KEY: str = validate_secret_key(os.environ.get("SECRET_KEY"), FLASK_ENV)
 if FLASK_ENV == "production":
-    if not os.environ.get("DATABASE_URI", "").startswith("postgresql+psycopg://"):
+    if not normalize_database_uri(DATABASE_URI).startswith("postgresql+psycopg://"):
         raise RuntimeError(
-            "Production requires DATABASE_URI using the postgresql+psycopg:// driver."
+            "Production requires DATABASE_URI using PostgreSQL; postgres:// and "
+            "postgresql:// URLs are normalized to the psycopg 3 driver."
         )
-    if not os.environ.get("ALLOWED_ORIGINS"):
-        raise RuntimeError("Production requires ALLOWED_ORIGINS to be explicitly configured.")
+    if STORAGE_BACKEND != "r2":
+        raise RuntimeError("Production requires STORAGE_BACKEND=r2 for durable file storage.")
+    ALLOWED_ORIGINS = validate_production_origins(os.environ.get("ALLOWED_ORIGINS"))
 
 # Maintenance credentials and login throttling
 DATASET_CLEANUP_TOKEN: str = os.environ.get("DATASET_CLEANUP_TOKEN", "")
@@ -116,6 +218,10 @@ SESSION_COOKIE_SECURE: bool = (
 SESSION_COOKIE_SAMESITE: str = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
 SESSION_COOKIE_MAX_AGE_SECONDS: int = 7 * 24 * 3600  # 7 days
 CSRF_TOKEN_MAX_AGE_SECONDS: int = SESSION_COOKIE_MAX_AGE_SECONDS
+if FLASK_ENV == "production" and SESSION_COOKIE_SAMESITE.lower() != "none":
+    raise RuntimeError(
+        "Production cross-origin authentication requires SESSION_COOKIE_SAMESITE=None."
+    )
 
 # ---------------------------------------------------------------------------
 # Logging

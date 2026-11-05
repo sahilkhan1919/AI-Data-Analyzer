@@ -52,7 +52,7 @@ from dataset_service import (
 from models import BusinessReport, Dataset, User
 from rate_limiter import clear_login_attempts, consume_login_attempt
 from report_service import create_business_report
-from storage import get_report_path
+import storage
 from analytics.data_quality import (
     compute_column_profiling,
     compute_dataset_overview,
@@ -96,8 +96,9 @@ CORS(
     supports_credentials=True,
 )
 
-# Ensure upload and storage folders exist
-os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
+# Local filesystem storage is initialized only when selected.
+if config.STORAGE_BACKEND == "local":
+    os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
 # Initialize database
 init_app_db(app)
@@ -283,6 +284,12 @@ def internal_error(e):
 def home():
     """Health check / root endpoint."""
     return jsonify({"message": "Backend is running"})
+
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Report process liveness without checking dependencies or exposing configuration."""
+    return jsonify({"status": "ok"}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -880,6 +887,29 @@ def download(dataset_id):
         return _error("DOWNLOAD_FAILED", "Failed to prepare the download.", 500)
 
 
+@app.route("/download/<dataset_id>/raw", methods=["GET"])
+@login_required
+def download_raw(dataset_id):
+    """Download the original raw CSV for the authenticated dataset owner."""
+    _, raw_df, err = _resolve_dataset(dataset_id)
+    if err:
+        return err
+
+    try:
+        buffer = io.BytesIO()
+        raw_df.to_csv(buffer, index=False, encoding="utf-8")
+        buffer.seek(0)
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name="raw_data.csv",
+            mimetype="text/csv",
+        )
+    except Exception as exc:
+        logger.error("Raw download error for dataset %s: %s", dataset_id, exc, exc_info=True)
+        return _error("DOWNLOAD_FAILED", "Failed to prepare the download.", 500)
+
+
 @app.route("/api/data-quality", methods=["GET", "POST"])
 @login_required
 def data_quality_endpoint():
@@ -1386,21 +1416,26 @@ def download_report_endpoint(report_id):
             dataset_expiry = dataset_expiry.replace(tzinfo=timezone.utc)
         if dataset_expiry <= datetime.now(timezone.utc):
             return _error("REPORT_NOT_FOUND", "Report not found.", 404)
-        report_path = get_report_path(report.id)
+        report_path = report.storage_path
     finally:
         db.close()
 
-    if not os.path.isfile(report_path):
+    try:
+        report_content = storage.load_report(report_path)
+    except FileNotFoundError:
         logger.error("Generated report file is missing for report %s.", report_id)
         return _error("REPORT_FILE_MISSING", "The generated report is unavailable.", 404)
+    except Exception as exc:
+        logger.error("Could not read generated report %s: %s", report_id, exc, exc_info=True)
+        return _error("REPORT_DOWNLOAD_FAILED", "Could not read the generated report.", 500)
     try:
         return send_file(
-            report_path,
+            io.BytesIO(report_content),
             as_attachment=True,
             download_name=f"business_report_{report_id}.pdf",
             mimetype="application/pdf",
         )
-    except OSError as exc:
+    except Exception as exc:
         logger.error("Could not read generated report %s: %s", report_id, exc, exc_info=True)
         return _error("REPORT_DOWNLOAD_FAILED", "Could not read the generated report.", 500)
 

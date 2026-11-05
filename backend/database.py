@@ -25,7 +25,7 @@ def create_db_engine(database_uri: str = None):
     """
     Create an engine configured appropriately for the target dialect.
     """
-    uri = database_uri or config.DATABASE_URI
+    uri = config.normalize_database_uri(database_uri or config.DATABASE_URI)
     connect_args = {}
 
     if uri.startswith("sqlite"):

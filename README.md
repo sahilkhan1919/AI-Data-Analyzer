@@ -101,6 +101,11 @@ npm run dev
 ```
 *Frontend runs at: `http://localhost:5173`*
 
+For production builds, set `VITE_API_URL` to the public backend base URL (for
+example, the deployed Render service URL). Production builds fail when it is
+missing or points to localhost. This value is public frontend configuration;
+never put API keys or other secrets in `VITE_*` variables.
+
 ---
 
 ## Database Configuration
@@ -113,24 +118,81 @@ DATABASE_URI=sqlite:///csv_dashboard.db
 Development and test tables are initialized on startup. Production schema changes use Alembic migrations; `create_all()` is not used in production.
 
 ### Production Deployment (PostgreSQL)
-Use an externally provisioned PostgreSQL database and set its connection string in the deployment environment:
+For Neon, copy the PostgreSQL connection URI from the Neon dashboard and add
+`sslmode=require` if it is not already present. The application accepts
+`postgresql://`, `postgres://`, and `postgresql+psycopg://` URIs and normalizes
+the first two to psycopg 3. Keep the URI in Render's environment settings, not
+in the repository:
 ```env
 FLASK_ENV=production
-DATABASE_URI=postgresql+psycopg://<user>:<password>@<host>:5432/<database_name>
+DATABASE_URI=postgresql://<user>:<password>@<host>/<database_name>?sslmode=require
 SECRET_KEY=<high-entropy-secret-of-at-least-32-bytes>
 ALLOWED_ORIGINS=https://<your-frontend-origin>
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAMESITE=None
-UPLOAD_FOLDER=/var/data
+STORAGE_BACKEND=r2
+R2_ACCOUNT_ID=<cloudflare-account-id>
+R2_BUCKET_NAME=<private-bucket-name>
+R2_ACCESS_KEY_ID=<bucket-scoped-access-key>
+R2_SECRET_ACCESS_KEY=<bucket-scoped-secret>
+R2_REGION=auto
+R2_PREFIX=csv-dashboard
 ```
-Keep secrets in the hosting provider's secret manager, not in this repository. A durable/shared storage volume is required for dataset files; `render.yaml` is an example, not proof that the deployed service or database is provisioned. The current Render example requires an externally supplied `DATABASE_URI` and `ALLOWED_ORIGINS`.
+Create a **private** R2 bucket and credentials limited to that bucket's object
+read/write/delete operations. Files remain private and are served through
+authenticated backend routes; do not make the bucket public. Store all database,
+R2, and session secrets in Render's secret environment settings.
 
-Run schema migrations before starting production workers:
+`render.yaml` configures the Render service, R2 environment variables, a
+pre-deploy migration, Gunicorn, and `/api/health`. It does not create the Neon
+database, R2 bucket, or credentials. Existing datasets in a local SQLite
+database or filesystem are not automatically copied to Neon/R2; export and
+re-upload them or arrange a separate migration before switching an existing
+deployment.
+
+Run schema migrations against the target database before starting production
+workers:
 ```bash
 cd backend
 alembic -c alembic.ini upgrade head
 ```
 For an existing database whose tables were created before Alembic was introduced, the initial migration reconciles missing migration-managed tables/columns and records the revision. Back up the database before its first production migration.
+
+### Manual deployment steps (after review)
+1. **Neon:** create a PostgreSQL project/database. Copy its connection URI
+   (prefer the pooled URI when offered), keep `sslmode=require`, and add it to
+   Render as `DATABASE_URI`.
+2. **Cloudflare R2:** create a private bucket and bucket-scoped S3 API
+   credentials. Add `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID`, and
+   `R2_SECRET_ACCESS_KEY` to Render. Keep `STORAGE_BACKEND=r2`,
+   `R2_REGION=auto`, and `R2_PREFIX=csv-dashboard`.
+3. **Render:** connect the reviewed GitHub repository and create the web service
+   from `render.yaml` (or configure the same values manually). Set
+   `DATABASE_URI`, the R2 credentials, a persistent random `SECRET_KEY`,
+   `ALLOWED_ORIGINS`, and `SESSION_COOKIE_SECURE=true`; keep
+   `SESSION_COOKIE_SAMESITE=None`. The configured pre-deploy command runs
+   `alembic -c alembic.ini upgrade head`; the start command runs Gunicorn and
+   the health check uses `/api/health`.
+4. **Vercel:** import the same repository with `frontend` as the root directory,
+   `npm run build` as the build command, and `dist` as the output directory.
+   Set `VITE_API_URL` to the Render service's HTTPS base URL (no API key or
+   trailing path) and add the Vercel production origin to Render's
+   comma-separated `ALLOWED_ORIGINS`. Rebuild the frontend after changing this
+   value.
+5. **Browser authentication:** use exact HTTPS origins, never a wildcard.
+   `SameSite=None; Secure`, credentialed CORS, and the existing CSRF token /
+   trusted-Origin checks are required for cross-origin cookie requests. The
+   default `*.vercel.app` and `*.onrender.com` hosts are cross-site and some
+   browsers block their cookies as third-party cookies. Prefer custom
+   subdomains under one registrable domain (for example `app.example.com` and
+   `api.example.com`) for reliable browser sessions; list the frontend origin
+   exactly in `ALLOWED_ORIGINS`.
+6. **Verify:** check `https://<render-service>/api/health`, then use the deployed
+   browser to register/login, retrieve `/api/auth/csrf`, upload a CSV, download
+   raw and cleaned CSVs, create/download a PDF report, and delete the dataset.
+   Confirm another account cannot access its dataset or report. These steps
+   must be run after deployment by the operator; no cloud resources are created
+   by local tests.
 
 ---
 
@@ -140,7 +202,7 @@ For an existing database whose tables were created before Alembic was introduced
 |----------|---------|-------------|
 | `FLASK_ENV` | `development` | `development` or `production` |
 | `PORT` | `5001` | Backend HTTP port |
-| `DATABASE_URI` | Local SQLite path | SQLAlchemy connection URI; production requires `postgresql+psycopg://` |
+| `DATABASE_URI` | Local SQLite path | SQLAlchemy URI; PostgreSQL `postgres://` and `postgresql://` URIs are normalized to psycopg 3 |
 | `SECRET_KEY` | Required (no default) | Stable, environment-provided high-entropy secret of at least 32 bytes; required in every environment |
 | `DATASET_CLEANUP_TOKEN` | Unset (cleanup disabled) | Private scheduler/admin Bearer credential for global expired-dataset cleanup |
 | `LOGIN_RATE_LIMIT_ATTEMPTS` | `5` | Login attempts allowed in a window |
@@ -149,7 +211,15 @@ For an existing database whose tables were created before Alembic was introduced
 | `SESSION_COOKIE_SECURE` | `false` | Set `true` in production with HTTPS |
 | `SESSION_COOKIE_SAMESITE`| `Lax` | SameSite cookie policy |
 | `MAX_UPLOAD_BYTES` | `10485760` (10 MB) | Maximum upload size in bytes |
-| `UPLOAD_FOLDER` | `uploads` | Directory for temporary exports and dataset files |
+| `UPLOAD_FOLDER` | `uploads` | Local filesystem storage root; used when `STORAGE_BACKEND=local` |
+| `STORAGE_BACKEND` | `local` | `local` or `r2`; production requires `r2` |
+| `R2_ACCOUNT_ID` | Unset | Cloudflare account ID; required for R2 unless a custom endpoint is supplied |
+| `R2_BUCKET_NAME` | Unset | Private R2 bucket name |
+| `R2_ACCESS_KEY_ID` | Unset | R2 S3 API access key; secret |
+| `R2_SECRET_ACCESS_KEY` | Unset | R2 S3 API secret; secret |
+| `R2_ENDPOINT_URL` | Derived from account ID | Optional HTTPS S3-compatible endpoint origin |
+| `R2_REGION` | `auto` | S3 client region; Cloudflare R2 uses `auto` |
+| `R2_PREFIX` | `csv-dashboard` | Object-key prefix used by the application |
 | `ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS allowed origins |
 | `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LLM_API_KEY` | Unset | Optional API key for an OpenAI-compatible explanation endpoint |
@@ -185,6 +255,7 @@ For an existing database whose tables were created before Alembic was introduced
 | `POST` | `/insights` | Basic statistical insights for selected columns |
 | `POST` | `/ask` | Rule-based natural-language Q&A |
 | `GET` | `/download/<dataset_id>` | Stream cleaned CSV dataset |
+| `GET` | `/download/<dataset_id>/raw` | Stream the original raw CSV for its owner |
 | `GET/POST` | `/api/data-quality` | Full data quality report (health score, profiling, outliers) |
 | `GET/POST` | `/api/data-profile` | Structural overview and column-level profiling |
 | `POST` | `/api/bi/kpis` | Dynamic business KPIs discovery and calculations |
@@ -208,9 +279,9 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-**Latest verification: 268 passed; 1 optional PostgreSQL integration test is skipped unless `TEST_POSTGRES_DATABASE_URI` is supplied.**
+**Latest verification: 294 passed**, including the PostgreSQL integration test against a temporary local PostgreSQL database.
 
-The optional integration test runs Alembic and the authenticated analytics/report workflows against a disposable PostgreSQL database:
+The PostgreSQL integration test runs Alembic and the authenticated analytics/report workflows against a disposable PostgreSQL database:
 ```bash
 TEST_POSTGRES_DATABASE_URI='postgresql+psycopg://<user>@<host>:5432/<disposable_database>' \
   python -m pytest tests/test_phase4_postgresql.py -v
@@ -222,7 +293,7 @@ cd frontend
 npm test
 ```
 
-**Latest verification: 15 passed (100% pass rate).**
+**Latest verification: 19 passed (100% pass rate).**
 - Authentication, session initialization, and expired-session tests
 - Input and form validation tests
 - Auth error display and login/logout tests
@@ -235,9 +306,9 @@ npm test
 cd frontend
 npm run build
 ```
-**Latest verification: build succeeded.** Vite reports a bundle-size advisory for the 638.85 kB minified JavaScript chunk (193.12 kB gzip).
+**Latest verification: build succeeded** with `VITE_API_URL` set. Vite reports a bundle-size advisory for the 639.56 kB minified JavaScript chunk (193.41 kB gzip).
 
-The Phase 4 PostgreSQL integration was run against a temporary local database, which was dropped after verification. Production deployment, managed PostgreSQL, target-host storage durability, and browser behavior behind the production proxy have not been verified. The Render example uses one Gunicorn worker with four threads and a persistent disk; horizontal multi-instance deployments need shared object storage or another explicitly shared durable storage solution.
+The temporary PostgreSQL database was dropped after verification. Neon connectivity and migrations, live R2 credentials/operations, and browser behavior on deployed Vercel/Render origins were not verified because no cloud credentials or resources were provided. Cross-origin CORS, CSRF, origin checks, and production cookie attributes were verified locally; third-party cookie behavior must still be checked in target browsers.
 
 For the one-worker Gunicorn restart test, local PostgreSQL integration, migration results, and remaining deployment limitations, see [`docs/PHASE3_SECURITY_REMEDIATION.md`](docs/PHASE3_SECURITY_REMEDIATION.md). These local checks do not certify production readiness.
 
@@ -255,7 +326,7 @@ CSV-Dashboard-Project/
 │   ├── auth.py                            ← Password hashing, tokens, @login_required
 │   ├── rate_limiter.py                    ← Database-backed login throttling
 │   ├── alembic.ini and migrations/        ← Versioned schema migration setup
-│   ├── storage.py                         ← Filesystem raw & cleaned dataset storage
+│   ├── storage.py                         ← Local filesystem and private R2 dataset/report storage
 │   ├── dataset_service.py                 ← Lifecycle, ownership, and caching service
 │   ├── requirements.txt                   ← Production dependencies (Flask, SQLAlchemy, etc.)
 │   ├── requirements-dev.txt               ← Testing dependencies (pytest, pytest-flask)

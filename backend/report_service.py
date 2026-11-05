@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from html import escape
 import io
 import logging
-import os
 import uuid
 
 import pandas as pd
@@ -265,12 +264,8 @@ def create_business_report(
 ) -> BusinessReport:
     """Write a generated PDF and commit owner-scoped report metadata."""
     report_id = str(uuid.uuid4())
-    report_dir = os.path.dirname(storage.get_report_path(report_id))
-    os.makedirs(report_dir, exist_ok=True)
-    report_path = storage.get_report_path(report_id)
-    temporary_path = f"{report_path}.tmp"
     db = SessionLocal()
-    file_created = False
+    report_persisted = False
     try:
         now = datetime.now(timezone.utc)
         dataset = (
@@ -288,10 +283,8 @@ def create_business_report(
             raise LookupError("The dataset is no longer available.")
 
         pdf_content = _make_pdf(dataset_name, raw_df, cleaned_df, options or {})
-        with open(temporary_path, "xb") as report_file:
-            report_file.write(pdf_content)
-        os.replace(temporary_path, report_path)
-        file_created = True
+        report_path = storage.persist_report(report_id, pdf_content)
+        report_persisted = True
         still_available = (
             db.query(Dataset.id)
             .filter(
@@ -318,15 +311,11 @@ def create_business_report(
         return report
     except Exception:
         db.rollback()
-        for path in (temporary_path, report_path if file_created else None):
-            if not path:
-                continue
+        if report_persisted:
             try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                logger.exception("Could not remove report files after metadata failure.")
+                storage.delete_report_storage(report_id)
+            except Exception:
+                logger.exception("Could not remove report after metadata failure.")
         raise
     finally:
         db.close()

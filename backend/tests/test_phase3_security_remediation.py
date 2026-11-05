@@ -95,7 +95,13 @@ def test_production_startup_accepts_valid_secret_and_explicit_deployment_setting
             "SECRET_KEY": secrets.token_urlsafe(48),
             "DATABASE_URI": "postgresql+psycopg://test:test@127.0.0.1:5432/not_connected",
             "ALLOWED_ORIGINS": "https://dashboard.example.test",
-            "UPLOAD_FOLDER": str(tmp_path / "durable-volume"),
+            "STORAGE_BACKEND": "r2",
+            "R2_ACCOUNT_ID": "test-account",
+            "R2_BUCKET_NAME": "test-bucket",
+            "R2_ACCESS_KEY_ID": "test-access-key",
+            "R2_SECRET_ACCESS_KEY": "test-secret-key",
+            "SESSION_COOKIE_SAMESITE": "None",
+            "UPLOAD_FOLDER": str(tmp_path / "unused-local-storage"),
         }
     )
     result = subprocess.run(
@@ -123,8 +129,9 @@ def test_render_manifest_declares_production_configuration_without_inline_secret
     assert "key: SECRET_KEY\n        generateValue: true" in manifest
     assert "key: ALLOWED_ORIGINS\n        sync: false" in manifest
     assert "key: DATABASE_URI\n        sync: false" in manifest
-    assert "mountPath: /var/data" in manifest
-    assert "value: /var/data" in manifest
+    assert "key: STORAGE_BACKEND\n        value: r2" in manifest
+    assert "key: R2_ACCESS_KEY_ID\n        sync: false" in manifest
+    assert "key: R2_SECRET_ACCESS_KEY\n        sync: false" in manifest
 
 
 def test_cleanup_requires_admin_token_and_rejects_normal_users(
