@@ -1,4 +1,4 @@
-"""Private local-filesystem and Cloudflare R2 storage for datasets and reports."""
+"""Private local-filesystem and Supabase Storage for datasets and reports."""
 
 import io
 import logging
@@ -8,6 +8,7 @@ import uuid
 from urllib.parse import urlsplit
 
 import pandas as pd
+from botocore.config import Config
 
 import config
 
@@ -17,57 +18,54 @@ STORAGE_DIR = os.path.join(config.UPLOAD_FOLDER, "datasets")
 if config.STORAGE_BACKEND == "local":
     os.makedirs(STORAGE_DIR, exist_ok=True)
 
-_r2_client = None
+_s3_client = None
+_OBJECT_PREFIX = "csv-dashboard"
 
 
-def _is_r2_location(location: str) -> bool:
-    return isinstance(location, str) and location.startswith("r2://")
+def _is_supabase_location(location: str) -> bool:
+    return isinstance(location, str) and location.startswith("supabase://")
 
 
-def _r2_key(location: str) -> str:
+def _s3_key(location: str) -> str:
     parsed = urlsplit(location)
     if (
-        parsed.scheme != "r2"
-        or parsed.netloc != config.R2_BUCKET_NAME
+        parsed.scheme != "supabase"
+        or parsed.netloc != config.SUPABASE_BUCKET_NAME
         or parsed.query
         or parsed.fragment
     ):
-        raise ValueError("Invalid R2 storage reference.")
+        raise ValueError("Invalid Supabase storage reference.")
     key = parsed.path.lstrip("/")
     if not key or any(part in {".", ".."} for part in key.split("/")):
-        raise ValueError("Invalid R2 storage reference.")
+        raise ValueError("Invalid Supabase storage reference.")
     return key
 
 
-def _r2_location(key: str) -> str:
-    return f"r2://{config.R2_BUCKET_NAME}/{key}"
+def _supabase_location(key: str) -> str:
+    return f"supabase://{config.SUPABASE_BUCKET_NAME}/{key}"
 
 
-def _r2_prefix() -> str:
-    return config.R2_PREFIX.strip("/")
+def _s3_key_for(relative_key: str) -> str:
+    return f"{_OBJECT_PREFIX}/{relative_key}"
 
 
-def _r2_key_for(relative_key: str) -> str:
-    prefix = _r2_prefix()
-    return f"{prefix}/{relative_key}" if prefix else relative_key
-
-
-def _get_r2_client():
-    global _r2_client
-    if _r2_client is None:
+def _get_s3_client():
+    global _s3_client
+    if _s3_client is None:
         import boto3
 
-        endpoint = config.R2_ENDPOINT_URL.rstrip("/") or (
-            f"https://{config.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-        )
-        _r2_client = boto3.client(
+        _s3_client = boto3.client(
             "s3",
-            endpoint_url=endpoint,
-            region_name=config.R2_REGION,
-            aws_access_key_id=config.R2_ACCESS_KEY_ID,
-            aws_secret_access_key=config.R2_SECRET_ACCESS_KEY,
+            endpoint_url=config.SUPABASE_S3_ENDPOINT,
+            region_name=config.SUPABASE_S3_REGION,
+            aws_access_key_id=config.SUPABASE_S3_ACCESS_KEY_ID,
+            aws_secret_access_key=config.SUPABASE_S3_SECRET_ACCESS_KEY,
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+            ),
         )
-    return _r2_client
+    return _s3_client
 
 
 def _is_missing_object(error: Exception) -> bool:
@@ -80,10 +78,12 @@ def _is_missing_object(error: Exception) -> bool:
 
 
 def _delete_object(location: str) -> None:
-    bucket = config.R2_BUCKET_NAME
-    key = _r2_key(location)
+    key = _s3_key(location)
     try:
-        _get_r2_client().delete_object(Bucket=bucket, Key=key)
+        _get_s3_client().delete_object(
+            Bucket=config.SUPABASE_BUCKET_NAME,
+            Key=key,
+        )
     except Exception as exc:
         if not _is_missing_object(exc):
             raise
@@ -91,11 +91,11 @@ def _delete_object(location: str) -> None:
 
 def get_dataset_paths(dataset_id: str) -> tuple[str, str]:
     """Return storage references for a dataset's raw and cleaned CSVs."""
-    if config.STORAGE_BACKEND == "r2":
-        prefix = _r2_key_for("datasets")
+    if config.STORAGE_BACKEND == "supabase":
+        prefix = _s3_key_for("datasets")
         return (
-            _r2_location(f"{prefix}/{dataset_id}_raw.csv"),
-            _r2_location(f"{prefix}/{dataset_id}_cleaned.csv"),
+            _supabase_location(f"{prefix}/{dataset_id}_raw.csv"),
+            _supabase_location(f"{prefix}/{dataset_id}_cleaned.csv"),
         )
     return (
         os.path.join(STORAGE_DIR, f"{dataset_id}_raw.csv"),
@@ -105,23 +105,28 @@ def get_dataset_paths(dataset_id: str) -> tuple[str, str]:
 
 def get_report_path(report_id: str) -> str:
     """Return the private storage reference for a generated report."""
-    if config.STORAGE_BACKEND == "r2":
-        return _r2_location(_r2_key_for(f"reports/{report_id}.pdf"))
+    if config.STORAGE_BACKEND == "supabase":
+        return _supabase_location(_s3_key_for(f"reports/{report_id}.pdf"))
     return os.path.join(STORAGE_DIR, "reports", f"{report_id}.pdf")
 
 
 def persist_report(report_id: str, content: bytes) -> str:
     """Persist PDF bytes and return their private storage reference."""
     path = get_report_path(report_id)
-    if _is_r2_location(path):
-        key = _r2_key(path)
-        client = _get_r2_client()
-        client.put_object(
-            Bucket=config.R2_BUCKET_NAME,
-            Key=key,
-            Body=content,
-            ContentType="application/pdf",
-        )
+    if _is_supabase_location(path):
+        try:
+            _get_s3_client().put_object(
+                Bucket=config.SUPABASE_BUCKET_NAME,
+                Key=_s3_key(path),
+                Body=content,
+                ContentType="application/pdf",
+            )
+        except Exception:
+            try:
+                _delete_object(path)
+            except Exception:
+                logger.error("Could not clean up a partially written report object.")
+            raise
         return path
 
     report_dir = os.path.dirname(path)
@@ -146,12 +151,11 @@ def persist_report(report_id: str, content: bytes) -> str:
 
 def load_report(path: str) -> bytes:
     """Load a private report from its storage reference."""
-    if _is_r2_location(path):
-        key = _r2_key(path)
+    if _is_supabase_location(path):
         try:
-            response = _get_r2_client().get_object(
-                Bucket=config.R2_BUCKET_NAME,
-                Key=key,
+            response = _get_s3_client().get_object(
+                Bucket=config.SUPABASE_BUCKET_NAME,
+                Key=_s3_key(path),
             )
         except Exception as exc:
             if _is_missing_object(exc):
@@ -167,7 +171,7 @@ def load_report(path: str) -> bytes:
 def delete_report_storage(report_id: str, storage_path: str | None = None) -> None:
     """Delete a generated report by its opaque identifier; missing reports are already removed."""
     path = storage_path if storage_path is not None else get_report_path(report_id)
-    if _is_r2_location(path):
+    if _is_supabase_location(path):
         _delete_object(path)
     else:
         try:
@@ -187,9 +191,9 @@ def _path_exists(path: str) -> bool:
 
 def _object_exists(location: str) -> bool:
     try:
-        _get_r2_client().head_object(
-            Bucket=config.R2_BUCKET_NAME,
-            Key=_r2_key(location),
+        _get_s3_client().head_object(
+            Bucket=config.SUPABASE_BUCKET_NAME,
+            Key=_s3_key(location),
         )
     except Exception as exc:
         if _is_missing_object(exc):
@@ -209,45 +213,35 @@ def persist_dataset(
     raw_df: pd.DataFrame,
     cleaned_df: pd.DataFrame,
 ) -> tuple[str, str]:
-    """Persist raw and cleaned CSVs and return their storage references."""
+    """Persist raw/cleaned CSVs and return their storage references."""
     raw_path, cleaned_path = get_dataset_paths(dataset_id)
-    if _is_r2_location(raw_path):
+    if _is_supabase_location(raw_path):
         if _object_exists(raw_path) or _object_exists(cleaned_path):
             raise FileExistsError(f"Dataset storage already exists for {dataset_id}")
 
-        raw_key = _r2_key(raw_path)
-        cleaned_key = _r2_key(cleaned_path)
-        suffix = uuid.uuid4().hex
-        temporary_keys = (f"{raw_key}.{suffix}.tmp", f"{cleaned_key}.{suffix}.tmp")
-        created_keys = []
-        client = _get_r2_client()
+        client = _get_s3_client()
+        written_keys = []
         try:
-            for frame, key in zip((raw_df, cleaned_df), temporary_keys):
+            for frame, path in zip((raw_df, cleaned_df), (raw_path, cleaned_path)):
+                key = _s3_key(path)
+                written_keys.append(key)
                 client.put_object(
-                    Bucket=config.R2_BUCKET_NAME,
+                    Bucket=config.SUPABASE_BUCKET_NAME,
                     Key=key,
                     Body=_frame_csv_bytes(frame),
                     ContentType="text/csv; charset=utf-8",
                 )
-            for temporary_key, key in zip(temporary_keys, (raw_key, cleaned_key)):
-                client.copy_object(
-                    Bucket=config.R2_BUCKET_NAME,
-                    Key=key,
-                    CopySource={"Bucket": config.R2_BUCKET_NAME, "Key": temporary_key},
-                    ContentType="text/csv; charset=utf-8",
-                    MetadataDirective="REPLACE",
-                )
-                created_keys.append(key)
-            for key in temporary_keys:
-                client.delete_object(Bucket=config.R2_BUCKET_NAME, Key=key)
         except Exception:
-            for key in (*temporary_keys, *created_keys):
+            for key in written_keys:
                 try:
-                    client.delete_object(Bucket=config.R2_BUCKET_NAME, Key=key)
+                    client.delete_object(
+                        Bucket=config.SUPABASE_BUCKET_NAME,
+                        Key=key,
+                    )
                 except Exception:
-                    logger.exception("Could not clean up temporary dataset object after upload failure.")
+                    logger.error("Could not clean up a partially written dataset object.")
             raise
-        logger.info("Persisted dataset %s to R2", dataset_id)
+        logger.info("Persisted dataset %s to Supabase Storage", dataset_id)
         return raw_path, cleaned_path
 
     os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -288,16 +282,17 @@ def persist_dataset(
 
 
 def _load_dataset(path: str, kind: str) -> pd.DataFrame:
-    if _is_r2_location(path):
-        key = _r2_key(path)
+    if _is_supabase_location(path):
         try:
-            response = _get_r2_client().get_object(
-                Bucket=config.R2_BUCKET_NAME,
-                Key=key,
+            response = _get_s3_client().get_object(
+                Bucket=config.SUPABASE_BUCKET_NAME,
+                Key=_s3_key(path),
             )
         except Exception as exc:
             if _is_missing_object(exc):
-                raise FileNotFoundError(f"{kind.capitalize()} dataset is missing from storage.") from exc
+                raise FileNotFoundError(
+                    f"{kind.capitalize()} dataset is missing from storage."
+                ) from exc
             raise
         with response["Body"] as body:
             content = body.read()
@@ -320,7 +315,7 @@ def load_raw_dataset(raw_path: str) -> pd.DataFrame:
 
 def delete_dataset_storage(raw_path: str, cleaned_path: str) -> None:
     """Remove dataset objects/files, ignoring missing objects and surfacing other failures."""
-    if _is_r2_location(raw_path) or _is_r2_location(cleaned_path):
+    if _is_supabase_location(raw_path) or _is_supabase_location(cleaned_path):
         for path in (raw_path, cleaned_path):
             if path:
                 _delete_object(path)
@@ -340,12 +335,12 @@ def stage_dataset_deletion(
     raw_path: str | None = None,
     cleaned_path: str | None = None,
 ) -> tuple[str, str]:
-    """Stage local files; R2 references remain inaccessible while DB deletion is pending."""
+    """Stage local files; Supabase references remain inaccessible while deletion is pending."""
     if (raw_path is None) != (cleaned_path is None):
         raise ValueError("Both raw and cleaned storage paths must be provided together.")
     if raw_path is None:
         raw_path, cleaned_path = get_dataset_paths(dataset_id)
-    if _is_r2_location(raw_path):
+    if _is_supabase_location(raw_path):
         return raw_path, cleaned_path
 
     staged_paths = (f"{raw_path}.deleting", f"{cleaned_path}.deleting")
@@ -360,8 +355,8 @@ def stage_dataset_deletion(
 
 
 def remove_staged_dataset(staged_paths: tuple[str, str]) -> None:
-    """Permanently remove staged files or R2 objects; errors keep deletion retryable."""
-    if any(_is_r2_location(path) for path in staged_paths):
+    """Permanently remove staged files or Supabase objects; failures remain retryable."""
+    if any(_is_supabase_location(path) for path in staged_paths):
         delete_dataset_storage(*staged_paths)
         return
 

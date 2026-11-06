@@ -17,11 +17,12 @@ def _production_env(origins="https://dashboard.example.test"):
             "SECRET_KEY": secrets.token_urlsafe(48),
             "DATABASE_URI": "postgresql://db.example.test/app?sslmode=require",
             "ALLOWED_ORIGINS": origins,
-            "STORAGE_BACKEND": "r2",
-            "R2_ACCOUNT_ID": "test-account",
-            "R2_BUCKET_NAME": "test-bucket",
-            "R2_ACCESS_KEY_ID": "test-access-key",
-            "R2_SECRET_ACCESS_KEY": "test-secret-key",
+            "STORAGE_BACKEND": "supabase",
+            "SUPABASE_S3_ENDPOINT": "https://project.supabase.co/storage/v1/s3",
+            "SUPABASE_S3_REGION": "us-east-1",
+            "SUPABASE_S3_ACCESS_KEY_ID": "test-access-key",
+            "SUPABASE_S3_SECRET_ACCESS_KEY": "test-secret-key",
+            "SUPABASE_BUCKET_NAME": "test-bucket",
             "SESSION_COOKIE_SAMESITE": "None",
         }
     )
@@ -116,6 +117,78 @@ def test_neon_uri_creates_psycopg_engine_without_connecting():
         assert engine.dialect.driver == "psycopg"
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "SUPABASE_S3_ENDPOINT",
+        "SUPABASE_S3_REGION",
+        "SUPABASE_S3_ACCESS_KEY_ID",
+        "SUPABASE_S3_SECRET_ACCESS_KEY",
+        "SUPABASE_BUCKET_NAME",
+    ],
+)
+def test_supabase_storage_configuration_requires_every_value(variable):
+    values = {
+        "SUPABASE_S3_ENDPOINT": "https://project.supabase.co/storage/v1/s3",
+        "SUPABASE_S3_REGION": "us-east-1",
+        "SUPABASE_S3_ACCESS_KEY_ID": "test-access-key",
+        "SUPABASE_S3_SECRET_ACCESS_KEY": "test-secret-key",
+        "SUPABASE_BUCKET_NAME": "private-data",
+    }
+    values[variable] = ""
+
+    with pytest.raises(RuntimeError, match=variable):
+        config.validate_supabase_storage_configuration(
+            values["SUPABASE_S3_ENDPOINT"],
+            values["SUPABASE_S3_REGION"],
+            values["SUPABASE_S3_ACCESS_KEY_ID"],
+            values["SUPABASE_S3_SECRET_ACCESS_KEY"],
+            values["SUPABASE_BUCKET_NAME"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "region", "bucket"),
+    [
+        ("http://project.supabase.co/storage/v1/s3", "us-east-1", "private-data"),
+        ("https://project.supabase.co", "us-east-1", "private-data"),
+        ("https://storage.example.test/storage/v1/s3", "us-east-1", "private-data"),
+        (
+            "https://user:password@project.supabase.co/storage/v1/s3",
+            "us-east-1",
+            "private-data",
+        ),
+        (
+            "https://project.supabase.co/storage/v1/s3?key=value",
+            "us-east-1",
+            "private-data",
+        ),
+        ("https://project.supabase.co/storage/v1/s3", " ", "private-data"),
+        ("https://project.supabase.co/storage/v1/s3", "us-east-1", "private/data"),
+    ],
+)
+def test_supabase_storage_configuration_rejects_invalid_values(endpoint, region, bucket):
+    with pytest.raises(RuntimeError):
+        config.validate_supabase_storage_configuration(
+            endpoint,
+            region,
+            "test-access-key",
+            "test-secret-key",
+            bucket,
+        )
+
+
+def test_supabase_storage_configuration_rejects_whitespace_in_credentials():
+    with pytest.raises(RuntimeError, match="credentials"):
+        config.validate_supabase_storage_configuration(
+            "https://project.supabase.co/storage/v1/s3",
+            "us-east-1",
+            "test access key",
+            "test-secret-key",
+            "private-data",
+        )
 
 
 def test_production_cookie_uses_secure_cross_origin_attributes():

@@ -19,19 +19,17 @@ services:
       - key: SESSION_COOKIE_SAMESITE
         value: "None"
       - key: STORAGE_BACKEND
-        value: r2
-      - key: R2_ACCOUNT_ID
+        value: supabase
+      - key: SUPABASE_S3_ENDPOINT
         sync: false
-      - key: R2_BUCKET_NAME
+      - key: SUPABASE_S3_REGION
         sync: false
-      - key: R2_ACCESS_KEY_ID
+      - key: SUPABASE_S3_ACCESS_KEY_ID
         sync: false
-      - key: R2_SECRET_ACCESS_KEY
+      - key: SUPABASE_S3_SECRET_ACCESS_KEY
         sync: false
-      - key: R2_REGION
-        value: auto
-      - key: R2_PREFIX
-        value: csv-dashboard
+      - key: SUPABASE_BUCKET_NAME
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: DATASET_CLEANUP_TOKEN

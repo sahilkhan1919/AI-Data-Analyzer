@@ -170,7 +170,7 @@ def get_accessible_dataset(dataset_id: str, user_id: str) -> tuple[pd.DataFrame 
             RAW_MEMORY_CACHE[dataset_id] = raw_df
         except FileNotFoundError:
             # Fall back to cleaned_df if raw file is missing
-            raw_df = cleaned_df
+            raw_df = None
 
     return cleaned_df, raw_df, None
 

@@ -130,24 +130,26 @@ SECRET_KEY=<high-entropy-secret-of-at-least-32-bytes>
 ALLOWED_ORIGINS=https://<your-frontend-origin>
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAMESITE=None
-STORAGE_BACKEND=r2
-R2_ACCOUNT_ID=<cloudflare-account-id>
-R2_BUCKET_NAME=<private-bucket-name>
-R2_ACCESS_KEY_ID=<bucket-scoped-access-key>
-R2_SECRET_ACCESS_KEY=<bucket-scoped-secret>
-R2_REGION=auto
-R2_PREFIX=csv-dashboard
+STORAGE_BACKEND=supabase
+SUPABASE_S3_ENDPOINT=https://<project-ref>.supabase.co/storage/v1/s3
+SUPABASE_S3_REGION=<project-region>
+SUPABASE_S3_ACCESS_KEY_ID=<server-side-s3-access-key>
+SUPABASE_S3_SECRET_ACCESS_KEY=<server-side-s3-secret-key>
+SUPABASE_BUCKET_NAME=<private-bucket-name>
 ```
-Create a **private** R2 bucket and credentials limited to that bucket's object
-read/write/delete operations. Files remain private and are served through
-authenticated backend routes; do not make the bucket public. Store all database,
-R2, and session secrets in Render's secret environment settings.
+Use your existing Supabase project and private bucket. Copy the S3 endpoint,
+region, and generated S3 access key pair from the Supabase Storage S3 settings.
+The endpoint should include `/storage/v1/s3`; do not include credentials in it.
+Keep the bucket private. The application uses server-side S3 credentials and
+authenticated backend download routes; it does not create public URLs or expose
+credentials to the frontend. Store the access key, secret key, database URI, and
+session secrets only in Render's environment settings.
 
-`render.yaml` configures the Render service, R2 environment variables, a
+`render.yaml` configures the Render service, Supabase environment variables, a
 pre-deploy migration, Gunicorn, and `/api/health`. It does not create the Neon
-database, R2 bucket, or credentials. Existing datasets in a local SQLite
-database or filesystem are not automatically copied to Neon/R2; export and
-re-upload them or arrange a separate migration before switching an existing
+database, Supabase bucket, or credentials. Existing datasets in an R2 bucket,
+local SQLite database, or filesystem are not automatically copied to Neon or
+Supabase Storage; migrate/re-upload them separately before switching an existing
 deployment.
 
 Run schema migrations against the target database before starting production
@@ -162,13 +164,14 @@ For an existing database whose tables were created before Alembic was introduced
 1. **Neon:** create a PostgreSQL project/database. Copy its connection URI
    (prefer the pooled URI when offered), keep `sslmode=require`, and add it to
    Render as `DATABASE_URI`.
-2. **Cloudflare R2:** create a private bucket and bucket-scoped S3 API
-   credentials. Add `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID`, and
-   `R2_SECRET_ACCESS_KEY` to Render. Keep `STORAGE_BACKEND=r2`,
-   `R2_REGION=auto`, and `R2_PREFIX=csv-dashboard`.
+2. **Supabase Storage:** use the existing private bucket and S3 credentials.
+   Add `SUPABASE_S3_ENDPOINT`, `SUPABASE_S3_REGION`,
+   `SUPABASE_S3_ACCESS_KEY_ID`, `SUPABASE_S3_SECRET_ACCESS_KEY`, and
+   `SUPABASE_BUCKET_NAME` to Render, and set `STORAGE_BACKEND=supabase`. Keep the
+   S3 credentials server-side; never add them to frontend settings.
 3. **Render:** connect the reviewed GitHub repository and create the web service
    from `render.yaml` (or configure the same values manually). Set
-   `DATABASE_URI`, the R2 credentials, a persistent random `SECRET_KEY`,
+   `DATABASE_URI`, the Supabase S3 settings, a persistent random `SECRET_KEY`,
    `ALLOWED_ORIGINS`, and `SESSION_COOKIE_SECURE=true`; keep
    `SESSION_COOKIE_SAMESITE=None`. The configured pre-deploy command runs
    `alembic -c alembic.ini upgrade head`; the start command runs Gunicorn and
@@ -203,7 +206,7 @@ For an existing database whose tables were created before Alembic was introduced
 | `FLASK_ENV` | `development` | `development` or `production` |
 | `PORT` | `5001` | Backend HTTP port |
 | `DATABASE_URI` | Local SQLite path | SQLAlchemy URI; PostgreSQL `postgres://` and `postgresql://` URIs are normalized to psycopg 3 |
-| `SECRET_KEY` | Required (no default) | Stable, environment-provided high-entropy secret of at least 32 bytes; required in every environment |
+| `SECRET_KEY` | Required (no default) | Stable, environment-provided secret of at least 32 bytes with high entropy; required in every environment |
 | `DATASET_CLEANUP_TOKEN` | Unset (cleanup disabled) | Private scheduler/admin Bearer credential for global expired-dataset cleanup |
 | `LOGIN_RATE_LIMIT_ATTEMPTS` | `5` | Login attempts allowed in a window |
 | `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | `900` | Login rate-limit window in seconds |
@@ -212,14 +215,12 @@ For an existing database whose tables were created before Alembic was introduced
 | `SESSION_COOKIE_SAMESITE`| `Lax` | SameSite cookie policy |
 | `MAX_UPLOAD_BYTES` | `10485760` (10 MB) | Maximum upload size in bytes |
 | `UPLOAD_FOLDER` | `uploads` | Local filesystem storage root; used when `STORAGE_BACKEND=local` |
-| `STORAGE_BACKEND` | `local` | `local` or `r2`; production requires `r2` |
-| `R2_ACCOUNT_ID` | Unset | Cloudflare account ID; required for R2 unless a custom endpoint is supplied |
-| `R2_BUCKET_NAME` | Unset | Private R2 bucket name |
-| `R2_ACCESS_KEY_ID` | Unset | R2 S3 API access key; secret |
-| `R2_SECRET_ACCESS_KEY` | Unset | R2 S3 API secret; secret |
-| `R2_ENDPOINT_URL` | Derived from account ID | Optional HTTPS S3-compatible endpoint origin |
-| `R2_REGION` | `auto` | S3 client region; Cloudflare R2 uses `auto` |
-| `R2_PREFIX` | `csv-dashboard` | Object-key prefix used by the application |
+| `STORAGE_BACKEND` | `local` | `local` or `supabase`; production requires `supabase` |
+| `SUPABASE_S3_ENDPOINT` | Unset | HTTPS S3 endpoint from Supabase Storage; includes `/storage/v1/s3` |
+| `SUPABASE_S3_REGION` | Unset | Region shown in the Supabase project's S3 settings |
+| `SUPABASE_S3_ACCESS_KEY_ID` | Unset | Server-side Supabase S3 access key; secret |
+| `SUPABASE_S3_SECRET_ACCESS_KEY` | Unset | Server-side Supabase S3 secret key; secret |
+| `SUPABASE_BUCKET_NAME` | Unset | Existing private Supabase Storage bucket name |
 | `ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS allowed origins |
 | `LOG_LEVEL` | `INFO` | Python log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LLM_API_KEY` | Unset | Optional API key for an OpenAI-compatible explanation endpoint |
@@ -246,10 +247,15 @@ For an existing database whose tables were created before Alembic was introduced
 |--------|-------|-------------|
 | `POST` | `/api/datasets/cleanup` | Trigger retryable cleanup using `Authorization: Bearer <DATASET_CLEANUP_TOKEN>` |
 
+### Health Check Endpoints (Public)
+| Method | Route | Description |
+|--------|-------|-------------|
+| `GET` | `/` | Root status endpoint |
+| `GET` | `/api/health` | Render health-check endpoint; reports process liveness |
+
 ### Core & Analytical Endpoints (Protected by `@login_required`)
 | Method | Route | Description |
 |--------|-------|-------------|
-| `GET` | `/` | Health check endpoint |
 | `POST` | `/upload` | Upload and clean CSV/Excel with database metadata persistence |
 | `POST` | `/chart-data` | Generate chart data (Bar, Line, Pie, Scatter, Histogram) |
 | `POST` | `/insights` | Basic statistical insights for selected columns |
@@ -279,9 +285,9 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-**Latest verification: 294 passed**, including the PostgreSQL integration test against a temporary local PostgreSQL database.
+**Latest verification: 309 passed, 1 skipped.** The skipped test is the optional PostgreSQL integration test, `tests/test_phase4_postgresql.py`; it requires an explicitly configured disposable PostgreSQL database.
 
-The PostgreSQL integration test runs Alembic and the authenticated analytics/report workflows against a disposable PostgreSQL database:
+To run the optional PostgreSQL integration test, configure `TEST_POSTGRES_DATABASE_URI` with an isolated disposable PostgreSQL database:
 ```bash
 TEST_POSTGRES_DATABASE_URI='postgresql+psycopg://<user>@<host>:5432/<disposable_database>' \
   python -m pytest tests/test_phase4_postgresql.py -v
@@ -308,9 +314,9 @@ npm run build
 ```
 **Latest verification: build succeeded** with `VITE_API_URL` set. Vite reports a bundle-size advisory for the 639.56 kB minified JavaScript chunk (193.41 kB gzip).
 
-The temporary PostgreSQL database was dropped after verification. Neon connectivity and migrations, live R2 credentials/operations, and browser behavior on deployed Vercel/Render origins were not verified because no cloud credentials or resources were provided. Cross-origin CORS, CSRF, origin checks, and production cookie attributes were verified locally; third-party cookie behavior must still be checked in target browsers.
+Neon connectivity and migrations, live Supabase connectivity, and browser behavior on deployed Vercel/Render origins have not been verified. Cross-origin CORS, CSRF, origin checks, and production cookie attributes are tested locally; third-party cookie behavior must still be checked in target browsers.
 
-For the one-worker Gunicorn restart test, local PostgreSQL integration, migration results, and remaining deployment limitations, see [`docs/PHASE3_SECURITY_REMEDIATION.md`](docs/PHASE3_SECURITY_REMEDIATION.md). These local checks do not certify production readiness.
+For the one-worker Gunicorn restart test, migration results, and remaining deployment limitations, see [`docs/PHASE3_SECURITY_REMEDIATION.md`](docs/PHASE3_SECURITY_REMEDIATION.md). These local checks do not certify production readiness.
 
 ---
 
@@ -326,7 +332,7 @@ CSV-Dashboard-Project/
 │   ├── auth.py                            ← Password hashing, tokens, @login_required
 │   ├── rate_limiter.py                    ← Database-backed login throttling
 │   ├── alembic.ini and migrations/        ← Versioned schema migration setup
-│   ├── storage.py                         ← Local filesystem and private R2 dataset/report storage
+│   ├── storage.py                         ← Local filesystem and private Supabase dataset/report storage
 │   ├── dataset_service.py                 ← Lifecycle, ownership, and caching service
 │   ├── requirements.txt                   ← Production dependencies (Flask, SQLAlchemy, etc.)
 │   ├── requirements-dev.txt               ← Testing dependencies (pytest, pytest-flask)

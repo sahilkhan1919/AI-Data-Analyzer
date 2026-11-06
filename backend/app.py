@@ -894,6 +894,12 @@ def download_raw(dataset_id):
     _, raw_df, err = _resolve_dataset(dataset_id)
     if err:
         return err
+    if raw_df is None:
+        return _error(
+            "RAW_DATASET_FILE_MISSING",
+            "The original dataset file is unavailable.",
+            404,
+        )
 
     try:
         buffer = io.BytesIO()

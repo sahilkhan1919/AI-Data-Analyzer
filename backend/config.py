@@ -7,7 +7,7 @@ CI, and production environments.
 
 Defaults are intentionally conservative for local development.
 Production requires an explicit strong SECRET_KEY, PostgreSQL DATABASE_URI,
-Cloudflare R2 storage, and ALLOWED_ORIGINS.
+Supabase Storage, and ALLOWED_ORIGINS.
 """
 
 import os
@@ -45,56 +45,86 @@ ALLOWED_EXTENSIONS: frozenset = frozenset({"csv", "xlsx"})
 # ---------------------------------------------------------------------------
 UPLOAD_FOLDER: str = os.environ.get("UPLOAD_FOLDER", "uploads")
 STORAGE_BACKEND: str = os.environ.get("STORAGE_BACKEND", "local").strip().lower()
-if STORAGE_BACKEND not in {"local", "r2"}:
-    raise RuntimeError("STORAGE_BACKEND must be either 'local' or 'r2'.")
+if STORAGE_BACKEND not in {"local", "supabase"}:
+    raise RuntimeError("STORAGE_BACKEND must be either 'local' or 'supabase'.")
 
-R2_ACCOUNT_ID: str = os.environ.get("R2_ACCOUNT_ID", "")
-R2_BUCKET_NAME: str = os.environ.get("R2_BUCKET_NAME", "")
-R2_ACCESS_KEY_ID: str = os.environ.get("R2_ACCESS_KEY_ID", "")
-R2_SECRET_ACCESS_KEY: str = os.environ.get("R2_SECRET_ACCESS_KEY", "")
-R2_ENDPOINT_URL: str = os.environ.get("R2_ENDPOINT_URL", "")
-R2_REGION: str = os.environ.get("R2_REGION", "auto")
-R2_PREFIX: str = os.environ.get("R2_PREFIX", "csv-dashboard")
+SUPABASE_S3_ENDPOINT: str = os.environ.get("SUPABASE_S3_ENDPOINT", "")
+SUPABASE_S3_REGION: str = os.environ.get("SUPABASE_S3_REGION", "")
+SUPABASE_S3_ACCESS_KEY_ID: str = os.environ.get("SUPABASE_S3_ACCESS_KEY_ID", "")
+SUPABASE_S3_SECRET_ACCESS_KEY: str = os.environ.get(
+    "SUPABASE_S3_SECRET_ACCESS_KEY", ""
+)
+SUPABASE_BUCKET_NAME: str = os.environ.get("SUPABASE_BUCKET_NAME", "")
 
 
-def validate_r2_configuration(
-    account_id: str | None,
-    bucket_name: str | None,
+def validate_supabase_storage_configuration(
+    endpoint: str | None,
+    region: str | None,
     access_key_id: str | None,
     secret_access_key: str | None,
-    endpoint_url: str | None = None,
+    bucket_name: str | None,
 ) -> None:
-    """Require private bucket credentials and a secure S3-compatible endpoint."""
-    if not bucket_name or not access_key_id or not secret_access_key:
+    """Require complete server-side credentials for a private Supabase bucket."""
+    required = {
+        "SUPABASE_S3_ENDPOINT": endpoint,
+        "SUPABASE_S3_REGION": region,
+        "SUPABASE_S3_ACCESS_KEY_ID": access_key_id,
+        "SUPABASE_S3_SECRET_ACCESS_KEY": secret_access_key,
+        "SUPABASE_BUCKET_NAME": bucket_name,
+    }
+    missing = [name for name, value in required.items() if not value or not value.strip()]
+    if missing:
         raise RuntimeError(
-            "R2 storage requires R2_BUCKET_NAME, R2_ACCESS_KEY_ID, and "
-            "R2_SECRET_ACCESS_KEY."
+            "Supabase storage requires the following environment variables: "
+            + ", ".join(missing)
+            + "."
         )
-    if not endpoint_url and not account_id:
-        raise RuntimeError("R2 storage requires R2_ACCOUNT_ID or R2_ENDPOINT_URL.")
-    if endpoint_url:
-        parsed = urlsplit(endpoint_url)
-        if (
-            parsed.scheme != "https"
-            or not parsed.netloc
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.path not in {"", "/"}
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise RuntimeError("R2_ENDPOINT_URL must be an HTTPS origin without a path.")
-    if any(part in {".", ".."} for part in R2_PREFIX.strip("/").split("/")):
-        raise RuntimeError("R2_PREFIX must not contain '.' or '..' path components.")
+
+    parsed = urlsplit(endpoint)
+    try:
+        parsed.port
+    except ValueError:
+        raise RuntimeError("SUPABASE_S3_ENDPOINT must be a valid HTTPS S3 endpoint.") from None
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not parsed.hostname.endswith(".supabase.co")
+        or parsed.port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path.rstrip("/") != "/storage/v1/s3"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError(
+            "SUPABASE_S3_ENDPOINT must be an HTTPS Supabase S3 endpoint ending "
+            "in /storage/v1/s3."
+        )
+    if any(
+        character.isspace()
+        for credential in (access_key_id, secret_access_key)
+        for character in credential
+    ):
+        raise RuntimeError("Supabase S3 credentials must not contain whitespace.")
+    if any(character.isspace() for character in region) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9-]*", region
+    ):
+        raise RuntimeError("SUPABASE_S3_REGION must be a valid region identifier.")
+    if (
+        any(character.isspace() for character in bucket_name)
+        or "/" in bucket_name
+        or bucket_name in {".", ".."}
+    ):
+        raise RuntimeError("SUPABASE_BUCKET_NAME must be a valid bucket name.")
 
 
-if STORAGE_BACKEND == "r2":
-    validate_r2_configuration(
-        R2_ACCOUNT_ID,
-        R2_BUCKET_NAME,
-        R2_ACCESS_KEY_ID,
-        R2_SECRET_ACCESS_KEY,
-        R2_ENDPOINT_URL or None,
+if STORAGE_BACKEND == "supabase":
+    validate_supabase_storage_configuration(
+        SUPABASE_S3_ENDPOINT,
+        SUPABASE_S3_REGION,
+        SUPABASE_S3_ACCESS_KEY_ID,
+        SUPABASE_S3_SECRET_ACCESS_KEY,
+        SUPABASE_BUCKET_NAME,
     )
 
 # ---------------------------------------------------------------------------
@@ -190,8 +220,10 @@ if FLASK_ENV == "production":
             "Production requires DATABASE_URI using PostgreSQL; postgres:// and "
             "postgresql:// URLs are normalized to the psycopg 3 driver."
         )
-    if STORAGE_BACKEND != "r2":
-        raise RuntimeError("Production requires STORAGE_BACKEND=r2 for durable file storage.")
+    if STORAGE_BACKEND != "supabase":
+        raise RuntimeError(
+            "Production requires STORAGE_BACKEND=supabase for durable file storage."
+        )
     ALLOWED_ORIGINS = validate_production_origins(os.environ.get("ALLOWED_ORIGINS"))
 
 # Maintenance credentials and login throttling
