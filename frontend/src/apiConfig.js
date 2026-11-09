@@ -1,10 +1,15 @@
 export function validateProductionApiUrl(apiUrl) {
   const configuredUrl = apiUrl?.trim();
-  if (!configuredUrl) {
-    throw new Error(
-      "VITE_API_URL is required for production builds. Set it to the deployed backend URL."
-    );
-  }
+  if (!configuredUrl) return "";
+
+  throw new Error(
+    "VITE_API_URL must be unset in production. API requests use the same-origin Vercel proxy."
+  );
+}
+
+function validateExternalApiUrl(apiUrl) {
+  const configuredUrl = apiUrl?.trim();
+  if (!configuredUrl) return "";
 
   let parsedUrl;
   try {
@@ -36,7 +41,7 @@ export function validateProductionApiUrl(apiUrl) {
 export function resolveApiUrl({ apiUrl, mode, location }) {
   const configuredUrl = apiUrl?.trim();
   if (mode === "production") return validateProductionApiUrl(configuredUrl);
-  if (configuredUrl) return configuredUrl.replace(/\/+$/, "");
+  if (configuredUrl) return validateExternalApiUrl(configuredUrl).replace(/\/+$/, "");
 
   const hostname = location.hostname || "127.0.0.1";
   return `${location.protocol}//${hostname}:5001`;

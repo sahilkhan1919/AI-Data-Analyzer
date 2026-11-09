@@ -12,31 +12,41 @@ describe("resolveApiUrl", () => {
     ).toBe("http://localhost:5001");
   });
 
-  it("uses an explicitly configured API URL", () => {
+  it("uses an explicitly configured API URL during development", () => {
     expect(
       resolveApiUrl({
         apiUrl: "https://api.example.test/",
-        mode: "production",
+        mode: "development",
         location: { protocol: "https:", hostname: "dashboard.example.test" },
       })
     ).toBe("https://api.example.test");
   });
 
-  it("fails closed when production has no API URL", () => {
-    expect(() =>
+  it("uses same-origin requests in production when no API URL is configured", () => {
+    expect(
       resolveApiUrl({
         apiUrl: "",
         mode: "production",
         location: { protocol: "https:", hostname: "dashboard.example.test" },
       })
-    ).toThrow(/VITE_API_URL is required for production builds/);
+    ).toBe("");
   });
 
-  it("rejects localhost API URLs in production", () => {
+  it("rejects an external API URL in production", () => {
+    expect(() =>
+      resolveApiUrl({
+        apiUrl: "https://api.example.test",
+        mode: "production",
+        location: { protocol: "https:", hostname: "dashboard.example.test" },
+      })
+    ).toThrow(/VITE_API_URL must be unset in production/);
+  });
+
+  it("rejects localhost API URLs in development", () => {
     expect(() =>
       resolveApiUrl({
         apiUrl: "http://localhost:5001",
-        mode: "production",
+        mode: "development",
         location: { protocol: "https:", hostname: "dashboard.example.test" },
       })
     ).toThrow(/without credentials or localhost/);

@@ -101,10 +101,10 @@ npm run dev
 ```
 *Frontend runs at: `http://localhost:5173`*
 
-For production builds, set `VITE_API_URL` to the public backend base URL (for
-example, the deployed Render service URL). Production builds fail when it is
-missing or points to localhost. This value is public frontend configuration;
-never put API keys or other secrets in `VITE_*` variables.
+For production, leave `VITE_API_URL` unset. Vercel serves the frontend and
+proxies its relative API requests to Render using `frontend/vercel.json`, so
+browser authentication cookies remain same-origin. Do not put API keys or
+other secrets in `VITE_*` variables.
 
 ---
 
@@ -176,26 +176,29 @@ For an existing database whose tables were created before Alembic was introduced
    `SESSION_COOKIE_SAMESITE=None`. The configured pre-deploy command runs
    `alembic -c alembic.ini upgrade head`; the start command runs Gunicorn and
    the health check uses `/api/health`.
-4. **Vercel:** import the same repository with `frontend` as the root directory,
-   `npm run build` as the build command, and `dist` as the output directory.
-   Set `VITE_API_URL` to the Render service's HTTPS base URL (no API key or
-   trailing path) and add the Vercel production origin to Render's
-   comma-separated `ALLOWED_ORIGINS`. Rebuild the frontend after changing this
-   value.
+4. **Vercel same-origin API proxy:** deploy the repository on Vercel with
+   `frontend` as the root directory, `npm run build` as the build command, and
+   `dist` as the output directory. [frontend/vercel.json](./frontend/vercel.json)
+   rewrites the frontend's API paths to the Render backend while keeping the
+   browser URL on the Vercel origin. Leave `VITE_API_URL` unset in Vercel so
+   Axios uses relative same-origin paths. The proxy preserves methods, request
+   bodies, and response headers, including the backend's HttpOnly `Set-Cookie`;
+   the host-only cookie is then stored for the Vercel domain and sent on later
+   API requests. Do not expose the session token to JavaScript or make protected
+   routes public.
 5. **Browser authentication:** use exact HTTPS origins, never a wildcard.
-   `SameSite=None; Secure`, credentialed CORS, and the existing CSRF token /
-   trusted-Origin checks are required for cross-origin cookie requests. The
-   default `*.vercel.app` and `*.onrender.com` hosts are cross-site and some
-   browsers block their cookies as third-party cookies. Prefer custom
-   subdomains under one registrable domain (for example `app.example.com` and
-   `api.example.com`) for reliable browser sessions; list the frontend origin
-   exactly in `ALLOWED_ORIGINS`.
+   Keep Render's production cookie settings `SESSION_COOKIE_SECURE=true` and
+   `SESSION_COOKIE_SAMESITE=None`. Keep `ALLOWED_ORIGINS` set to the exact
+   frontend origin (for example `https://ai-data-analyzer-sooty.vercel.app`);
+   Flask's CORS and trusted-Origin/CSRF checks remain enabled.
 6. **Verify:** check `https://<render-service>/api/health`, then use the deployed
    browser to register/login, retrieve `/api/auth/csrf`, upload a CSV, download
    raw and cleaned CSVs, create/download a PDF report, and delete the dataset.
-   Confirm another account cannot access its dataset or report. These steps
-   must be run after deployment by the operator; no cloud resources are created
-   by local tests.
+   Confirm the login response sets `csv_session` for the Vercel host and the
+   subsequent `POST /upload` uses that cookie and returns 200. Also confirm
+   another account cannot access the dataset or report. These steps must be run
+   after deployment by the operator; no cloud resources are created by local
+   tests.
 
 ---
 

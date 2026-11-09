@@ -160,6 +160,29 @@ class TestUserLogin:
         replay = unauth_client.get("/api/auth/me")
         assert replay.status_code == 401
 
+    def test_login_cookie_authenticates_upload(
+        self, unauth_client, default_user, simple_csv_bytes
+    ):
+        import io
+
+        login = unauth_client.post(
+            "/api/auth/login",
+            json={"email": default_user.email, "password": "Password123!"},
+        )
+
+        assert login.status_code == 200
+        assert unauth_client.get_cookie("csv_session") is not None
+        assert "token" not in login.get_json()
+
+        upload = unauth_client.post(
+            "/upload",
+            data={"file": (io.BytesIO(simple_csv_bytes), "test.csv")},
+            content_type="multipart/form-data",
+        )
+
+        assert upload.status_code == 200
+        assert "dataset_id" in upload.get_json()
+
     def test_login_invalid_password_rejected(self, unauth_client):
         unauth_client.post(
             "/api/auth/register",

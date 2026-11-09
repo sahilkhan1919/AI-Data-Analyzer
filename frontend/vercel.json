@@ -1,0 +1,28 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://ai-data-analyzer-backend.onrender.com/api/:path*"
+    },
+    {
+      "source": "/upload",
+      "destination": "https://ai-data-analyzer-backend.onrender.com/upload"
+    },
+    {
+      "source": "/chart-data",
+      "destination": "https://ai-data-analyzer-backend.onrender.com/chart-data"
+    },
+    {
+      "source": "/insights",
+      "destination": "https://ai-data-analyzer-backend.onrender.com/insights"
+    },
+    {
+      "source": "/ask",
+      "destination": "https://ai-data-analyzer-backend.onrender.com/ask"
+    },
+    {
+      "source": "/download/:path*",
+      "destination": "https://ai-data-analyzer-backend.onrender.com/download/:path*"
+    }
+  ]
+}
